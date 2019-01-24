@@ -46,14 +46,17 @@ gdbuswarning_printed = False
 gresource_warning_printed = False
 _gir_has_option = {}
 
-def gir_has_option(intr_obj, option):
+def gir_has_option(intr_obj, option, gir_dep):
     global _gir_has_option
     if option in _gir_has_option:
         return _gir_has_option[option]
 
     _gir_has_option[option] = False
     try:
-        g_ir_scanner = intr_obj.find_program_impl('g-ir-scanner').get_command()
+        giscanner_path = 'g-ir-scanner'
+        if gir_dep.is_found:
+            giscanner_path = gir_dep.get_pkgconfig_variable('g_ir_scanner', {'default': 'g-ir-scanner'})
+        g_ir_scanner = intr_obj.find_program_impl(giscanner_path).get_command()
         opts = Popen_safe(g_ir_scanner + ['--help'], stderr=subprocess.STDOUT)[1]
         _gir_has_option[option] = option in opts
     except (MesonException, FileNotFoundError, subprocess.CalledProcessError):
@@ -309,7 +312,7 @@ class GnomeModule(ExtensionModule):
             if include_rpath:
                 link_command.append('-Wl,-rpath,' + libdir)
             depends.append(lib)
-        if gir_has_option(self.interpreter, '--extra-library') and use_gir_args:
+        if gir_has_option(self.interpreter, '--extra-library', self.gir_dep) and use_gir_args:
             link_command.append('--extra-library=' + lib.name)
         else:
             link_command.append('-l' + lib.name)
@@ -325,6 +328,8 @@ class GnomeModule(ExtensionModule):
         external_ldflags_nodedup = []
         gi_includes = OrderedSet()
         deps = mesonlib.listify(deps, unholder=True)
+
+        self.gir_dep, _ = self._get_gir_dep(state)
 
         for dep in deps:
             if isinstance(dep, InternalDependency):
@@ -393,7 +398,7 @@ class GnomeModule(ExtensionModule):
                 mlog.log('dependency {!r} not handled to build gir files'.format(dep))
                 continue
 
-        if gir_has_option(self.interpreter, '--extra-library') and use_gir_args:
+        if gir_has_option(self.interpreter, '--extra-library', self.gir_dep) and use_gir_args:
             def fix_ldflags(ldflags):
                 fixed_ldflags = OrderedSet()
                 for ldflag in ldflags:
@@ -430,7 +435,7 @@ class GnomeModule(ExtensionModule):
         try:
             gir_dep = self.gir_dep or PkgConfigDependency('gobject-introspection-1.0',
                                                           state.environment,
-                                                          {'native': True})
+                                                          {'native': False})
             pkgargs = gir_dep.get_compile_args()
         except Exception:
             raise MesonException('gobject-introspection dependency was not found, gir cannot be generated.')
@@ -745,15 +750,20 @@ class GnomeModule(ExtensionModule):
         if kwargs.get('install_dir'):
             raise MesonException('install_dir is not supported with generate_gir(), see "install_dir_gir" and "install_dir_typelib"')
 
-        giscanner = self.interpreter.find_program_impl('g-ir-scanner')
-        gicompiler = self.interpreter.find_program_impl('g-ir-compiler')
+        self.gir_dep, pkgargs = self._get_gir_dep(state)
+
+        giscanner_path = 'g-ir-scanner'
+        gicompiler_path = 'g-ir-compier'
+        if self.gir_dep.is_found:
+            giscanner_path = self.gir_dep.get_pkgconfig_variable('g_ir_scanner', {'default': 'g-ir-scanner'})
+            gicompiler_path = self.gir_dep.get_pkgconfig_variable('g_ir_compiler', {'default': 'g-ir-compiler'})
+        giscanner = self.interpreter.find_program_impl(giscanner_path)
+        gicompiler = self.interpreter.find_program_impl(gicompiler_path)
 
         girtargets = [self._unwrap_gir_target(arg, state) for arg in args]
 
         if len(girtargets) > 1 and any([isinstance(el, build.Executable) for el in girtargets]):
             raise MesonException('generate_gir only accepts a single argument when one of the arguments is an executable')
-
-        self.gir_dep, pkgargs = self._get_gir_dep(state)
 
         ns = kwargs.pop('namespace')
         nsversion = kwargs.pop('nsversion')
@@ -806,7 +816,7 @@ class GnomeModule(ExtensionModule):
         scan_command += self._scan_langs(state, [lc[0] for lc in langs_compilers])
         scan_command += list(external_ldflags)
 
-        if gir_has_option(self.interpreter, '--sources-top-dirs'):
+        if gir_has_option(self.interpreter, '--sources-top-dirs', self.gir_dep):
             scan_command += ['--sources-top-dirs', os.path.join(state.environment.get_source_dir(), self.interpreter.subproject_dir, state.subproject)]
             scan_command += ['--sources-top-dirs', os.path.join(state.environment.get_build_dir(), self.interpreter.subproject_dir, state.subproject)]
 
